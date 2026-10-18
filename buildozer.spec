@@ -12,6 +12,7 @@ version = 0.1
 # смотри "Если не собралось" в инструкции.
 requirements = python3,pygame,sdl2,sdl2_image,sdl2_mixer,sdl2_ttf
 
+icon.filename = %(source.dir)s/icon.png
 orientation = landscape
 fullscreen = 1
 
