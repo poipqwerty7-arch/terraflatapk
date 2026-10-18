@@ -16,6 +16,26 @@ import sys
 # каждом обновлении APK, и миры бы пропадали.
 DATA_DIR = os.environ.get('ANDROID_PRIVATE') or '.'
 
+# На Android ресурсы (Textures, Music) лежат в папке приложения
+# (ANDROID_ARGUMENT). Относительные пути вида "Textures/..." работают только
+# если рабочая папка = папка с игрой, поэтому переходим в неё явно.
+_android_app_dir = os.environ.get('ANDROID_ARGUMENT')
+if _android_app_dir and os.path.isdir(_android_app_dir):
+    try:
+        os.chdir(_android_app_dir)
+    except Exception:
+        pass
+
+
+def _count_files(path):
+    """Сколько файлов в папке (рекурсивно); -1 если папки нет."""
+    if not os.path.isdir(path):
+        return -1
+    total = 0
+    for _root, _dirs, files in os.walk(path):
+        total += len(files)
+    return total
+
 # --- КОНСТАНТЫ ---
 pygame.init()
 info = pygame.display.Info()
@@ -4801,6 +4821,15 @@ class Game:
             
             version_text = self.small_font.render("Версия 0.1  ·  FPS: " + str(int(self.clock.get_fps())), True, self.UI_TEXT_DIM)
             self.screen.blit(version_text, (10, HEIGHT - 30))
+            
+            # Диагностика ресурсов: показываем только если чего-то не хватает
+            n_tex = _count_files("Textures")
+            n_mus = _count_files("Music")
+            if n_tex <= 0 or n_mus <= 0:
+                diag = self.small_font.render(
+                    f"Textures: {n_tex} файлов, Music: {n_mus} файлов  |  папка: {os.getcwd()}",
+                    True, self.UI_BAD)
+                self.screen.blit(diag, (10, HEIGHT - 60))
         except:
             pass
 
