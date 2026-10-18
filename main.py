@@ -16,6 +16,18 @@ import sys
 # каждом обновлении APK, и миры бы пропадали.
 DATA_DIR = os.environ.get('ANDROID_PRIVATE') or '.'
 
+# Сборка PyInstaller (.exe): ресурсы (Textures, Music) лежат во временной/
+# внутренней папке сборки (sys._MEIPASS), а миры, моды и настройки должны
+# храниться рядом с .exe, иначе в режиме --onefile они пропадали бы при
+# каждом запуске.
+if getattr(sys, 'frozen', False):
+    DATA_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    _res_dir = getattr(sys, '_MEIPASS', DATA_DIR)
+    try:
+        os.chdir(_res_dir)
+    except Exception:
+        pass
+
 # На Android ресурсы (Textures, Music) лежат в папке приложения
 # (ANDROID_ARGUMENT). Относительные пути вида "Textures/..." работают только
 # если рабочая папка = папка с игрой, поэтому переходим в неё явно.
@@ -1755,6 +1767,12 @@ class Game:
             PINE_WOOD: (80, 60, 40),
         }
         
+        # Статистика загрузки - показывается в главном меню, если что-то не нашлось
+        self.tex_total = len(texture_files)
+        self.tex_loaded = 0
+        self.tex_missing = []
+        self.tex_first_error = ""
+        
         # Загружаем обычные текстуры
         for b_id, filename in texture_files.items():
             path = os.path.join("Textures", filename)
@@ -1782,10 +1800,15 @@ class Game:
                         self.textures[b_id] = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE * 2))
                     else:
                         self.textures[b_id] = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE))
+                    self.tex_loaded += 1
                 else:
+                    self.tex_missing.append(filename)
                     self.create_fallback_texture(b_id, fallback_colors.get(b_id, (255, 255, 255)))
             except Exception as e:
                 print(f"Ошибка загрузки текстуры {filename}: {e}")
+                self.tex_missing.append(filename)
+                if not self.tex_first_error:
+                    self.tex_first_error = f"{filename}: {e}"
                 self.create_fallback_texture(b_id, fallback_colors.get(b_id, (255, 255, 255)))
         
         # Загружаем текстуры закрытых дверей
@@ -5054,11 +5077,16 @@ class Game:
             # Диагностика ресурсов: показываем только если чего-то не хватает
             n_tex = _count_files("Textures")
             n_mus = _count_files("Music")
-            if n_tex <= 0 or n_mus <= 0:
-                diag = self.small_font.render(
-                    f"Textures: {n_tex} файлов, Music: {n_mus} файлов  |  папка: {os.getcwd()}",
-                    True, self.UI_BAD)
-                self.screen.blit(diag, (10, HEIGHT - 60))
+            tex_missing = getattr(self, 'tex_missing', [])
+            if n_tex <= 0 or n_mus <= 0 or tex_missing:
+                lines = [f"Textures: {n_tex} файлов, Music: {n_mus} файлов  |  папка: {os.getcwd()}"]
+                if tex_missing:
+                    lines.append(f"Текстур загружено {getattr(self, 'tex_loaded', 0)} из {getattr(self, 'tex_total', 0)}; нет: " + ", ".join(tex_missing[:4]))
+                if getattr(self, 'tex_first_error', ""):
+                    lines.append("Ошибка: " + self.tex_first_error[:110])
+                for i, line in enumerate(lines):
+                    diag = self.small_font.render(line, True, self.UI_BAD)
+                    self.screen.blit(diag, (10, HEIGHT - 60 - 24 * (len(lines) - 1 - i)))
         except:
             pass
 
