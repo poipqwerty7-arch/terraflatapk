@@ -17,6 +17,13 @@ fullscreen = 1
 
 android.api = 33
 android.minapi = 24
+android.ndk = 25b
+android.ndk_api = 24
+
+# Фиксируем старую стабильную версию python-for-android (Python 3.11):
+# на свежем Python 3.14 pygame 2.1.0 из рецепта не компилируется
+# (fatal error: 'longintrepr.h' file not found).
+p4a.branch = v2024.01.21
 android.archs = arm64-v8a
 android.accept_sdk_license = True
 
