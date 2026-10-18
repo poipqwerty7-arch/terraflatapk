@@ -746,6 +746,28 @@ class Game:
         self.sound_volume = 0.6
         self.dragging_slider = None
         
+        # Графика: пресеты задают режим освещения и дальность прорисовки,
+        # дальность по X/Y игрок может потом подкрутить слайдерами.
+        # (название, режим света, дальность X, дальность Y) - дальность в тайлах от игрока.
+        self.GRAPHICS_PRESETS = [
+            ("Супер низкая", "off",    14, 8),
+            ("Низкая",       "coarse", 20, 11),
+            ("Средняя",      "smooth", 28, 15),
+            ("Высокая",      "full",   50, 30),
+        ]
+        self.VIEW_X_MIN, self.VIEW_X_MAX = 6, 50
+        self.VIEW_Y_MIN, self.VIEW_Y_MAX = 4, 30
+        # На телефоне по умолчанию "Низкая", на ПК "Высокая"
+        self.graphics_quality = 1 if os.environ.get('ANDROID_ARGUMENT') else 3
+        self.view_dist_x = self.GRAPHICS_PRESETS[self.graphics_quality][2]
+        self.view_dist_y = self.GRAPHICS_PRESETS[self.graphics_quality][3]
+        self._light_cache_surf = None
+        self._light_cache_key = None
+        self._light_cache_tick = 0
+        self.settings_sliders = {}
+        self.settings_gfx_btns = []
+        self.load_settings()
+        
         self.inventory_recipes_scroll = 0
         self.crafting_recipes_scroll = 0
         self.max_inventory_recipes_scroll = 0
@@ -1068,6 +1090,91 @@ class Game:
             self.empty_heart_texture = pygame.Surface((20, 20))
             self.empty_heart_texture.fill((100, 0, 0))
 
+    def settings_path(self):
+        return os.path.join(DATA_DIR, "settings.json")
+
+    def load_settings(self):
+        """Читает сохранённые настройки (громкость, графика, дальность)."""
+        try:
+            path = self.settings_path()
+            if not os.path.exists(path):
+                return
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self.music_volume = max(0.0, min(1.0, float(data.get('music_volume', self.music_volume))))
+            self.sound_volume = max(0.0, min(1.0, float(data.get('sound_volume', self.sound_volume))))
+            q = int(data.get('graphics_quality', self.graphics_quality))
+            self.graphics_quality = max(0, min(len(self.GRAPHICS_PRESETS) - 1, q))
+            self.view_dist_x = max(self.VIEW_X_MIN, min(self.VIEW_X_MAX, int(data.get('view_dist_x', self.view_dist_x))))
+            self.view_dist_y = max(self.VIEW_Y_MIN, min(self.VIEW_Y_MAX, int(data.get('view_dist_y', self.view_dist_y))))
+        except Exception as e:
+            print(f"Не удалось прочитать настройки: {e}")
+
+    def save_settings(self):
+        try:
+            with open(self.settings_path(), 'w', encoding='utf-8') as f:
+                json.dump({
+                    'music_volume': self.music_volume,
+                    'sound_volume': self.sound_volume,
+                    'graphics_quality': self.graphics_quality,
+                    'view_dist_x': self.view_dist_x,
+                    'view_dist_y': self.view_dist_y,
+                }, f)
+        except Exception as e:
+            print(f"Не удалось сохранить настройки: {e}")
+
+    def set_graphics_quality(self, q):
+        q = max(0, min(len(self.GRAPHICS_PRESETS) - 1, q))
+        self.graphics_quality = q
+        self.view_dist_x = self.GRAPHICS_PRESETS[q][2]
+        self.view_dist_y = self.GRAPHICS_PRESETS[q][3]
+        self._light_cache_key = None  # сбросить кэш освещения
+
+    def get_view_tile_box(self):
+        """Окно дальности прорисовки в тайлах: пересечение экрана и области
+        +-view_dist вокруг игрока. Возвращает (x0, y0, x1, y1), x1/y1 не включены."""
+        T = TILE_SIZE
+        sx = int(self.camera_x // T) - 1
+        sy = int(self.camera_y // T) - 1
+        ex = sx + WIDTH // T + 3
+        ey = sy + HEIGHT // T + 3
+        px = int(self.player_rect.centerx // T)
+        py = int(self.player_rect.centery // T)
+        x0 = max(sx, px - self.view_dist_x)
+        x1 = min(ex, px + self.view_dist_x + 1)
+        y0 = max(sy, py - self.view_dist_y)
+        y1 = min(ey, py + self.view_dist_y + 1)
+        if x1 <= x0:
+            x1 = x0 + 1
+        if y1 <= y0:
+            y1 = y0 + 1
+        return x0, y0, x1, y1
+
+    def draw_view_frame(self, box):
+        """Закрашивает чёрным всё за пределами дальности прорисовки."""
+        T = TILE_SIZE
+        bx0, by0, bx1, by1 = box
+        l = int(bx0 * T - self.camera_x)
+        t = int(by0 * T - self.camera_y)
+        r = int(bx1 * T - self.camera_x)
+        b = int(by1 * T - self.camera_y)
+        if l <= 0 and t <= 0 and r >= WIDTH and b >= HEIGHT:
+            return
+        black = (0, 0, 0)
+        scr = self.screen
+        if t > 0:
+            scr.fill(black, (0, 0, WIDTH, min(t, HEIGHT)))
+        if b < HEIGHT:
+            b0 = max(b, 0)
+            scr.fill(black, (0, b0, WIDTH, HEIGHT - b0))
+        ymin, ymax = max(t, 0), min(b, HEIGHT)
+        if ymax > ymin:
+            if l > 0:
+                scr.fill(black, (0, ymin, min(l, WIDTH), ymax - ymin))
+            if r < WIDTH:
+                r0 = max(r, 0)
+                scr.fill(black, (r0, ymin, WIDTH - r0, ymax - ymin))
+
     def init_lighting(self):
         self.darkness_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.light_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -1175,39 +1282,79 @@ class Game:
                             light_map[pos] = v
         self._lava_light_map = light_map
 
-    def apply_lighting(self):
+    def apply_lighting(self, box=None):
+        """Освещение. Режим зависит от графики:
+        off    - один общий тёмный слой ночью/под землёй (без поблочного света);
+        coarse - свет считается на блок 2x2 тайла, сглаживается, обновляется редко;
+        smooth - свет на каждый тайл, сглаживается, обновляется раз в пару кадров;
+        full   - свет на каждый тайл каждый кадр (как раньше)."""
         try:
-            self.darkness_surface.fill((0, 0, 0, 0))
-            
-            # Поблочное затемнение: каждый видимый тайл получает свою альфу
-            # на основе его собственного уровня освещённости (get_light_level_at),
-            # а не единого значения, завязанного на то, "под землёй ли игрок".
-            # Это даёт: затемнение в пещерах даже днём (если над тайлом сплошной
-            # потолок), нормальный свет снаружи даже если игрок застрял внутри
-            # блока, и плавный градиент вместо резкой границы.
+            mode = self.GRAPHICS_PRESETS[self.graphics_quality][1]
             max_darkness_alpha = 220  # максимальная темнота там, где света совсем нет
+            T = TILE_SIZE
+            if box is None:
+                box = self.get_view_tile_box()
+            bx0, by0, bx1, by1 = box
             
-            sx = int(self.camera_x // TILE_SIZE) - 1
-            sy = int(self.camera_y // TILE_SIZE) - 1
-            ex = sx + (WIDTH // TILE_SIZE) + 3
-            ey = sy + (HEIGHT // TILE_SIZE) + 3
+            if mode == "off":
+                # Одна проверка вместо тысяч: темно ли вокруг игрока
+                px = int(self.player_rect.centerx // T)
+                py = int(self.player_rect.centery // T)
+                light = self.get_light_level_at(px, py, {})
+                alpha = int(max_darkness_alpha * 0.65 * (1 - light / 15))
+                if alpha > 0:
+                    if self.darkness_surface is None or self.darkness_surface.get_size() != (WIDTH, HEIGHT):
+                        self.init_lighting()
+                    self.darkness_surface.fill((0, 0, 0, alpha))
+                    self.screen.blit(self.darkness_surface, (0, 0))
+                return
             
-            self._rebuild_lava_light(sx, sy, ex, ey)
-            ceiling_cache = {}
-            for tx in range(sx, ex):
-                for ty in range(sy, ey):
-                    light = self.get_light_level_at(tx, ty, ceiling_cache)
-                    # 15 = полностью светло (alpha 0), 0 = полностью темно (alpha максимум)
-                    darkness_ratio = 1 - (light / 15)
-                    alpha = int(max_darkness_alpha * darkness_ratio)
-                    if alpha > 0:
-                        rx = tx * TILE_SIZE - self.camera_x
-                        ry = ty * TILE_SIZE - self.camera_y
-                        pygame.draw.rect(self.darkness_surface, (0, 0, 0, alpha),
-                                        (rx, ry, TILE_SIZE, TILE_SIZE))
+            self._rebuild_lava_light(bx0, by0, bx1, by1)
             
-            self.screen.blit(self.darkness_surface, (0, 0))
-        except:
+            if mode == "full":
+                self.darkness_surface.fill((0, 0, 0, 0))
+                ceiling_cache = {}
+                for tx in range(bx0, bx1):
+                    for ty in range(by0, by1):
+                        light = self.get_light_level_at(tx, ty, ceiling_cache)
+                        alpha = int(max_darkness_alpha * (1 - light / 15))
+                        if alpha > 0:
+                            rx = tx * T - self.camera_x
+                            ry = ty * T - self.camera_y
+                            pygame.draw.rect(self.darkness_surface, (0, 0, 0, alpha),
+                                            (rx, ry, T, T))
+                self.screen.blit(self.darkness_surface, (0, 0))
+                return
+            
+            # coarse / smooth: считаем свет в маленькую поверхность (1 пиксель
+            # = 1 клетка света), растягиваем с интерполяцией и кэшируем.
+            step = 2 if mode == "coarse" else 1
+            interval = 6 if mode == "coarse" else 3
+            x0 = bx0 - (bx0 % step)
+            y0 = by0 - (by0 % step)
+            key = (x0, y0, bx1, by1, step)
+            self._light_cache_tick += 1
+            if key != self._light_cache_key or self._light_cache_tick >= interval or self._light_cache_surf is None:
+                self._light_cache_tick = 0
+                self._light_cache_key = key
+                cols = (bx1 - x0 + step - 1) // step
+                rows = (by1 - y0 + step - 1) // step
+                small = pygame.Surface((cols, rows), pygame.SRCALPHA)
+                ceiling_cache = {}
+                for cx in range(cols):
+                    tx = x0 + cx * step
+                    for cy in range(rows):
+                        ty = y0 + cy * step
+                        light = self.get_light_level_at(tx, ty, ceiling_cache)
+                        alpha = int(max_darkness_alpha * (1 - light / 15))
+                        small.set_at((cx, cy), (0, 0, 0, alpha))
+                size = (cols * step * T, rows * step * T)
+                if cols * rows > 1:
+                    self._light_cache_surf = pygame.transform.smoothscale(small, size)
+                else:
+                    self._light_cache_surf = pygame.transform.scale(small, size)
+            self.screen.blit(self._light_cache_surf, (x0 * T - self.camera_x, y0 * T - self.camera_y))
+        except Exception:
             pass
 
     def update_lighting(self):
@@ -3144,52 +3291,128 @@ class Game:
         except:
             pass
 
+    def get_settings_layout(self):
+        """Геометрия меню настроек - единая для отрисовки и обработки нажатий."""
+        ui_width = min(520, int(WIDTH * 0.94))
+        ui_height = min(560, int(HEIGHT * 0.94))
+        ui_x, ui_y = (WIDTH - ui_width) // 2, (HEIGHT - ui_height) // 2
+        ui_rect = pygame.Rect(ui_x, ui_y, ui_width, ui_height)
+        k = ui_height / 560.0
+        pad = int(30 * min(1.0, ui_width / 520.0))
+        slider_width = ui_width - pad * 2
+        slider_x = ui_x + pad
+        n = len(self.GRAPHICS_PRESETS)
+        gap = 8
+        btn_w = (slider_width - gap * (n - 1)) // n
+        btn_h = max(34, int(46 * k))
+        gfx_y = ui_y + int(104 * k)
+        gfx_btns = [pygame.Rect(slider_x + i * (btn_w + gap), gfx_y, btn_w, btn_h) for i in range(n)]
+        sliders_y = {
+            'music': ui_y + int(236 * k),
+            'sound': ui_y + int(306 * k),
+            'view_x': ui_y + int(376 * k),
+            'view_y': ui_y + int(446 * k),
+        }
+        back_btn = pygame.Rect(ui_rect.centerx - 140, ui_y + ui_height - int(58 * k) - 6, 280, max(38, int(48 * k)))
+        return {'ui_rect': ui_rect, 'slider_x': slider_x, 'slider_width': slider_width,
+                'gfx_btns': gfx_btns, 'gfx_label_y': gfx_y - 26, 'sliders_y': sliders_y,
+                'back_btn': back_btn}
+
+    def get_slider_ratio(self, name):
+        if name == 'music':
+            return self.music_volume
+        if name == 'sound':
+            return self.sound_volume
+        if name == 'view_x':
+            return (self.view_dist_x - self.VIEW_X_MIN) / float(self.VIEW_X_MAX - self.VIEW_X_MIN)
+        if name == 'view_y':
+            return (self.view_dist_y - self.VIEW_Y_MIN) / float(self.VIEW_Y_MAX - self.VIEW_Y_MIN)
+        return 0.0
+
+    def set_slider_ratio(self, name, ratio):
+        ratio = max(0.0, min(1.0, ratio))
+        if name == 'music':
+            self.music_volume = ratio
+            try:
+                pygame.mixer.music.set_volume(self.music_volume)
+            except Exception:
+                pass
+        elif name == 'sound':
+            self.sound_volume = ratio
+        elif name == 'view_x':
+            self.view_dist_x = int(round(self.VIEW_X_MIN + ratio * (self.VIEW_X_MAX - self.VIEW_X_MIN)))
+            self._light_cache_key = None
+        elif name == 'view_y':
+            self.view_dist_y = int(round(self.VIEW_Y_MIN + ratio * (self.VIEW_Y_MAX - self.VIEW_Y_MIN)))
+            self._light_cache_key = None
+
+    def handle_settings_press(self, mx, my):
+        """Нажатие в меню настроек. Возвращает True, если оно что-то задело."""
+        L = self.get_settings_layout()
+        if L['back_btn'].collidepoint((mx, my)):
+            self.settings_open = False
+            self.dragging_slider = None
+            self.save_settings()
+            return True
+        for i, r in enumerate(L['gfx_btns']):
+            if r.collidepoint((mx, my)):
+                self.set_graphics_quality(i)
+                self.save_settings()
+                return True
+        for name, y in L['sliders_y'].items():
+            track = pygame.Rect(L['slider_x'] - 12, y - 18, L['slider_width'] + 24, 42)
+            if track.collidepoint((mx, my)):
+                self.dragging_slider = name
+                self.set_slider_ratio(name, (mx - L['slider_x']) / float(L['slider_width']))
+                return True
+        return False
+
+    def handle_settings_drag(self, mx):
+        if self.dragging_slider:
+            L = self.get_settings_layout()
+            self.set_slider_ratio(self.dragging_slider, (mx - L['slider_x']) / float(L['slider_width']))
+
     def draw_settings_menu(self):
         try:
             overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 210))
             self.screen.blit(overlay, (0, 0))
             
-            ui_width, ui_height = min(480, int(WIDTH * 0.9)), min(340, int(HEIGHT * 0.85))
-            ui_x, ui_y = (WIDTH - ui_width) // 2, (HEIGHT - ui_height) // 2
-            ui_rect = pygame.Rect(ui_x, ui_y, ui_width, ui_height)
-            
+            L = self.get_settings_layout()
+            ui_rect = L['ui_rect']
             self.draw_ui_panel(ui_rect, "НАСТРОЙКИ")
-            
-            slider_width = 360
-            slider_x = ui_rect.centerx - slider_width // 2
+            slider_x, slider_width = L['slider_x'], L['slider_width']
             mouse_pos = pygame.mouse.get_pos()
             
+            gfx_label = self.small_font.render("ГРАФИКА", True, self.UI_TEXT_DIM)
+            self.screen.blit(gfx_label, (slider_x, L['gfx_label_y']))
+            for i, r in enumerate(L['gfx_btns']):
+                name = self.GRAPHICS_PRESETS[i][0]
+                self.draw_type_choice_button(r, name, i == self.graphics_quality)
+            
             def draw_slider(label, value, slider_y):
-                label_text = self.small_font.render(f"{label}: {int(value * 100)}%", True, self.UI_TEXT)
+                label_text = self.small_font.render(label, True, self.UI_TEXT)
                 self.screen.blit(label_text, (slider_x, slider_y - 26))
-                
                 track_rect = pygame.Rect(slider_x, slider_y, slider_width, 6)
                 pygame.draw.rect(self.screen, (18, 19, 24), track_rect, border_radius=3)
-                
                 fill_width = int(slider_width * value)
                 if fill_width > 0:
                     pygame.draw.rect(self.screen, self.UI_ACCENT, (slider_x, slider_y, fill_width, 6), border_radius=3)
-                
                 handle_x = slider_x + fill_width
                 handle_y = slider_y + 3
                 hover = math.hypot(mouse_pos[0] - handle_x, mouse_pos[1] - handle_y) < 14
                 handle_color = (255, 210, 130) if hover else self.UI_ACCENT
-                pygame.draw.circle(self.screen, handle_color, (handle_x, handle_y), 9)
-                pygame.draw.circle(self.screen, (255, 255, 255), (handle_x, handle_y), 9, 2)
-                
-                return track_rect
+                pygame.draw.circle(self.screen, handle_color, (handle_x, handle_y), 11)
+                pygame.draw.circle(self.screen, (255, 255, 255), (handle_x, handle_y), 11, 2)
             
-            music_track = draw_slider("Громкость музыки", self.music_volume, ui_y + 110)
-            sound_track = draw_slider("Громкость звуков", self.sound_volume, ui_y + 180)
+            ys = L['sliders_y']
+            draw_slider(f"Громкость музыки: {int(self.music_volume * 100)}%", self.music_volume, ys['music'])
+            draw_slider(f"Громкость звуков: {int(self.sound_volume * 100)}%", self.sound_volume, ys['sound'])
+            draw_slider(f"Дальность прорисовки по X: {self.view_dist_x} бл.", self.get_slider_ratio('view_x'), ys['view_x'])
+            draw_slider(f"Дальность прорисовки по Y: {self.view_dist_y} бл.", self.get_slider_ratio('view_y'), ys['view_y'])
             
-            back_btn = pygame.Rect(ui_rect.centerx - 140, ui_y + ui_height - 74, 280, 50)
-            self.draw_ui_button(back_btn, "Назад")
-            
-            self.settings_music_track = music_track
-            self.settings_sound_track = sound_track
-            self.settings_back_btn = back_btn
-        except:
+            self.draw_ui_button(L['back_btn'], "Назад")
+        except Exception:
             pass
 
     def draw_mods_menu(self):
@@ -4065,6 +4288,12 @@ class Game:
         pygame.draw.rect(self.screen, border, rect, 2, border_radius=10)
         text_color = self.UI_TEXT if selected else self.UI_TEXT_DIM
         text_surf = self.small_font.render(label, True, text_color)
+        # Длинную подпись сжимаем, чтобы она не вылезала за кнопку
+        max_w = rect.width - 12
+        if text_surf.get_width() > max_w and max_w > 10:
+            k = max_w / float(text_surf.get_width())
+            text_surf = pygame.transform.smoothscale(
+                text_surf, (max_w, max(1, int(text_surf.get_height() * k))))
         self.screen.blit(text_surf, (rect.centerx - text_surf.get_width()//2, rect.centery - text_surf.get_height()//2))
 
     def draw_health(self):
@@ -4870,8 +5099,14 @@ class Game:
                     self.render_cache.clear()
                     self.last_render_time = current_time
                 
+                view_box = self.get_view_tile_box()
+                render_start_x = max(render_start_x, view_box[0])
+                render_end_x = min(render_end_x, view_box[2])
+                render_y0 = max(sy - 1, view_box[1])
+                render_y1 = min(sy + (HEIGHT//40) + 2, view_box[3])
+                
                 for x in range(render_start_x, render_end_x):
-                    for y in range(sy - 1, sy + (HEIGHT//40) + 2):
+                    for y in range(render_y0, render_y1):
                         if (x, y) in self.world:
                             b_id, lvl, is_f = self.world[(x, y)]
                             if b_id != EMPTY:
@@ -4944,10 +5179,12 @@ class Game:
                 if len(self.ash_particles) > 50:
                     self.ash_particles = self.ash_particles[-50:]
                 
-                for p in self.ash_particles: 
-                    pygame.draw.rect(self.screen, (100, 100, 100), (p[0], p[1], 4, 4))
+                if self.graphics_quality > 0:
+                    for p in self.ash_particles: 
+                        pygame.draw.rect(self.screen, (100, 100, 100), (p[0], p[1], 4, 4))
                 
-                self.apply_lighting()
+                self.draw_view_frame(view_box)
+                self.apply_lighting(view_box)
                 
                 if self.furnace_open is not None and self.furnace_open in self.furnaces:
                     self.draw_furnace_ui(self.furnaces[self.furnace_open])
@@ -5120,6 +5357,8 @@ class Game:
                                 elif self.paused:
                                     if self.settings_open:
                                         self.settings_open = False
+                                        self.dragging_slider = None
+                                        self.save_settings()
                                     else:
                                         self.paused = False
                                 else:
@@ -5226,17 +5465,7 @@ class Game:
                         
                         if self.paused:
                             if self.settings_open:
-                                if hasattr(self, 'settings_back_btn') and self.settings_back_btn.collidepoint((mx, my)):
-                                    self.settings_open = False
-                                elif hasattr(self, 'settings_music_track') and self.settings_music_track.collidepoint((mx, my)):
-                                    ratio = (mx - self.settings_music_track.x) / self.settings_music_track.width
-                                    self.music_volume = max(0.0, min(1.0, ratio))
-                                    pygame.mixer.music.set_volume(self.music_volume)
-                                    self.dragging_slider = "music"
-                                elif hasattr(self, 'settings_sound_track') and self.settings_sound_track.collidepoint((mx, my)):
-                                    ratio = (mx - self.settings_sound_track.x) / self.settings_sound_track.width
-                                    self.sound_volume = max(0.0, min(1.0, ratio))
-                                    self.dragging_slider = "sound"
+                                self.handle_settings_press(mx, my)
                             elif hasattr(self, 'pause_resume_btn') and self.pause_resume_btn.collidepoint((mx, my)):
                                 self.paused = False
                             elif hasattr(self, 'pause_settings_btn') and self.pause_settings_btn.collidepoint((mx, my)):
@@ -5782,18 +6011,13 @@ class Game:
                     if event.type == pygame.MOUSEBUTTONUP and self.state == "PLAYING":
                         if event.button == 1:
                             self.stop_mining()
-                        self.dragging_slider = None
+                        if self.dragging_slider:
+                            self.dragging_slider = None
+                            self.save_settings()
                     
                     if event.type == pygame.MOUSEMOTION and self.state == "PLAYING":
                         if self.paused and self.settings_open and self.dragging_slider:
-                            mx, my = event.pos
-                            if self.dragging_slider == "music" and hasattr(self, 'settings_music_track'):
-                                ratio = (mx - self.settings_music_track.x) / self.settings_music_track.width
-                                self.music_volume = max(0.0, min(1.0, ratio))
-                                pygame.mixer.music.set_volume(self.music_volume)
-                            elif self.dragging_slider == "sound" and hasattr(self, 'settings_sound_track'):
-                                ratio = (mx - self.settings_sound_track.x) / self.settings_sound_track.width
-                                self.sound_volume = max(0.0, min(1.0, ratio))
+                            self.handle_settings_drag(event.pos[0])
                         elif self.inventory_open or self.crafting_table_open:
                             mx, my = event.pos
                             self.recipe_hover_info = None
