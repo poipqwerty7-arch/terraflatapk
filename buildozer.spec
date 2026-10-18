@@ -4,7 +4,7 @@ package.name = teraflat
 package.domain = org.teraflat
 
 source.dir = .
-source.include_exts = py,png,jpg,mp3,ogg,wav,xml,json
+source.include_exts = py,png,PNG,jpg,JPG,jpeg,mp3,MP3,ogg,OGG,wav,WAV,xml,json
 source.include_patterns = Textures/*,Music/*,Music/menu/*,Music/game/*
 version = 0.1
 
