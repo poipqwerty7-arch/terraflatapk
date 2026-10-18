@@ -4976,7 +4976,28 @@ class Game:
         running = True
         while running:
             try:
+                # Экранная клавиатура (Android): включаем ввод текста только пока
+                # активно текстовое поле, иначе клавиатура не появляется.
+                want_text = (self.state == "WORLD_CREATE" and self.typing_name)
+                if want_text != getattr(self, '_text_input_on', False):
+                    try:
+                        if want_text:
+                            center_x = WIDTH // 2
+                            pygame.key.set_text_input_rect(pygame.Rect(center_x - 250, 210, 500, 50))
+                            pygame.key.start_text_input()
+                        else:
+                            pygame.key.stop_text_input()
+                    except Exception:
+                        pass
+                    self._text_input_on = want_text
+                
                 for event in pygame.event.get():
+                    if event.type == pygame.TEXTINPUT and self.state == "WORLD_CREATE" and self.typing_name:
+                        for ch in event.text:
+                            if len(self.world_create_name) < 20 and ch.isprintable():
+                                self.world_create_name += ch
+                        continue
+
                     if event.type == pygame.QUIT: 
                         running = False
                     
@@ -5148,8 +5169,9 @@ class Game:
                                 self.world_create_name = self.world_create_name[:-1]
                             elif event.key == pygame.K_ESCAPE:
                                 self.typing_name = False
-                            elif event.unicode and len(self.world_create_name) < 20 and event.unicode.isprintable():
-                                self.world_create_name += event.unicode
+                            # Символы приходят через TEXTINPUT (работает и на ПК,
+                            # и с экранной клавиатуры Android), здесь только
+                            # служебные клавиши - иначе буквы дублировались бы.
                     
                     if event.type == pygame.MOUSEWHEEL and self.state == "PLAYING":
                         if self.inventory_open:
