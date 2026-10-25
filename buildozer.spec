@@ -1,6 +1,6 @@
 [app]
 title = Teraflat
-package.name = teraflat
+package.name = terraflat
 package.domain = org.teraflat
 
 source.dir = .
@@ -8,8 +8,7 @@ source.include_exts = py,png,PNG,jpg,JPG,jpeg,mp3,MP3,ogg,OGG,wav,WAV,xml,json
 source.include_patterns = Textures/*,Music/*,Music/menu/*,Music/game/*
 version = 0.2
 
-# pygame на Android - самая капризная часть. Если сборка падает на pygame,
-# смотри "Если не собралось" в инструкции.
+# pygame на Android - самая капризная часть.
 requirements = python3,pygame,sdl2,sdl2_image,sdl2_mixer,sdl2_ttf
 
 icon.filename = %(source.dir)s/icon.png
@@ -21,14 +20,12 @@ android.minapi = 24
 android.ndk = 25b
 android.ndk_api = 24
 
-# Фиксируем версию python-for-android с Python 3.10.10: рецепт pygame
-# собирает pygame 2.1.0, а он не компилируется на Python 3.11 и новее
-# (fatal error: 'longintrepr.h' file not found).
+# Фиксируем версию python-for-android с Python 3.10.10 под Pygame 2.1.0
 p4a.branch = v2023.05.21
-android.archs = arm64-v8a
+android.archs = arm64-v8a, armeabi-v7a
 android.accept_sdk_license = True
 
-# Для хранения миров хватает приватной папки приложения, доп. разрешения не нужны
+# Для хранения миров хватает приватной папки приложения
 android.permissions =
 
 [buildozer]
