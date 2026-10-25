@@ -1,4 +1,5 @@
 name: Build APK
+
 on:
   workflow_dispatch:
   push:
@@ -20,13 +21,34 @@ jobs:
           sudo apt-get install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config \
             zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
 
-      - name: Buildozer
+      - name: Генерация ключа подписи (для RuStore)
+        run: |
+          keytool -genkey -v -keystore mygame.keystore -alias mygame_alias \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "SuperSecretPass123" -keypass "SuperSecretPass123" \
+            -dname "CN=Terraflat, O=Developer, C=RU"
+
+      - name: Установка зависимостей Python и принятие лицензий Android
         run: |
           pip install --upgrade pip
           pip install buildozer cython==0.29.36
-          buildozer -v android debug
+          
+          # Автоматически принимаем лицензии Android SDK, чтобы сборка не падала
+          mkdir -p ~/.android
+          touch ~/.android/repositories.cfg
+          yes | buildozer android licenses
+
+      - name: Buildozer Сборка
+        env:
+          BUILDOZER_SECRET_KEYSTORE: mygame.keystore
+          BUILDOZER_SECRET_KEYSTORE_PASSWORD: SuperSecretPass123
+          BUILDOZER_SECRET_KEY_ALIAS: mygame_alias
+          BUILDOZER_SECRET_KEY_PASSWORD: SuperSecretPass123
+        run: |
+          # Собираем РЕЛИЗНУЮ версию
+          buildozer -v android release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: teraflat-apk
+          name: terraflat-release-apk
           path: bin/*.apk
