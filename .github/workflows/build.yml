@@ -14,36 +14,31 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Скачать исходный код
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Установить Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Установить Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Установить системные зависимости
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git zip unzip \
+            git zip unzip build-essential \
             autoconf automake libtool pkg-config \
             zlib1g-dev libncurses5-dev libncursesw5-dev \
-            cmake libffi-dev libssl-dev \
-            build-essential ccache
+            cmake libffi-dev libssl-dev
 
-      - name: Установить Buildozer
-        run: |
           python -m pip install --upgrade pip
-          python -m pip install "buildozer==1.5.0" "cython==0.29.36"
+          python -m pip install \
+            "buildozer==1.5.0" "cython==0.29.36"
 
-      - name: Проверить обязательные файлы
+      - name: Check project files
         run: |
           test -f buildozer.spec
           test -f main.py
@@ -51,72 +46,86 @@ jobs:
           test -d Textures
           test -d Music
 
-      - name: Подготовить ключ подписи
+      - name: Prepare signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          test -n "$KEYSTORE_BASE64"
-          mkdir -p "$RUNNER_TEMP/terraflat-signing"
-          echo "$KEYSTORE_BASE64" | base64 --decode \
-            > "$RUNNER_TEMP/terraflat-signing/release.keystore"
-          test -s "$RUNNER_TEMP/terraflat-signing/release.keystore"
+          mkdir -p "$RUNNER_TEMP/signing"
 
-      - name: Принять лицензии Android
+          if [ -n "$KEYSTORE_BASE64" ] &&
+             [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode \
+              > "$RUNNER_TEMP/signing/release.keystore"
+            echo "FIRST_SETUP=false" >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair \
+              -keystore "$RUNNER_TEMP/signing/release.keystore" \
+              -storepass "TemporarySetupOnly123!" \
+              -keypass "TemporarySetupOnly123!" \
+              -alias terraflat \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Terraflat, O=Terraflat, C=RU"
+
+            echo "FIRST_SETUP=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Android package
         run: |
           mkdir -p "$HOME/.android"
           touch "$HOME/.android/repositories.cfg"
           yes | buildozer android-licenses || true
-
-      - name: Собрать Release APK
-        env:
-          BUILDOZER_WARN_ON_ROOT: "0"
-        run: |
           buildozer -v android release
 
-      - name: Подписать APK для RuStore
+      - name: Export first setup key
+        if: env.FIRST_SETUP == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Terraflat-FIRST-SETUP-KEY
+          path: ${{ runner.temp }}/signing/release.keystore
+          retention-days: 1
+
+      - name: Stop before publishing unsigned-key build
+        if: env.FIRST_SETUP == 'true'
+        run: |
+          echo "Download the key artifact and configure GitHub Secrets."
+          echo "Run the workflow again after setup."
+          exit 1
+
+      - name: Sign release APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        shell: bash
         run: |
           set -euo pipefail
 
           SDK="$HOME/.buildozer/android/platform/android-sdk"
-          APK="$(find bin -maxdepth 1 -type f -name '*.apk' \
-            ! -name 'Terraflat-release.apk' | head -n 1)"
-
+          APK="$(find bin -maxdepth 1 -name '*.apk' | head -n 1)"
           test -n "$APK"
-          test -f "$APK"
 
-          APKSIGNER="$(find "$SDK/build-tools" -type f \
-            -name apksigner | sort -V | tail -n 1)"
-          ZIPALIGN="$(find "$SDK/build-tools" -type f \
-            -name zipalign | sort -V | tail -n 1)"
+          TOOLS="$(find "$SDK/build-tools" -mindepth 1 \
+            -maxdepth 1 -type d | sort -V | tail -n 1)"
 
-          test -n "$APKSIGNER"
-          test -n "$ZIPALIGN"
+          "$TOOLS/zipalign" -f -p 4 \
+            "$APK" "$RUNNER_TEMP/aligned.apk"
 
-          KEYSTORE="$RUNNER_TEMP/terraflat-signing/release.keystore"
-          zipalign -f -p 4 "$APK" bin/Terraflat-aligned.apk
-
-          "$APKSIGNER" sign \
-            --ks "$KEYSTORE" \
+          "$TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/signing/release.keystore" \
             --ks-key-alias "$KEY_ALIAS" \
             --ks-pass env:KEYSTORE_PASSWORD \
             --key-pass env:KEY_PASSWORD \
-            --out bin/Terraflat-release.apk \
-            bin/Terraflat-aligned.apk
+            --out "$RUNNER_TEMP/Terraflat-release.apk" \
+            "$RUNNER_TEMP/aligned.apk"
 
-          "$APKSIGNER" verify --verbose --print-certs \
-            bin/Terraflat-release.apk
+          "$TOOLS/apksigner" verify --verbose \
+            "$RUNNER_TEMP/Terraflat-release.apk"
 
-          rm -f bin/Terraflat-aligned.apk
-
-      - name: Загрузить готовый APK
+      - name: Upload signed APK
+        if: success() && env.FIRST_SETUP == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: Terraflat-Release-APK
-          path: bin/Terraflat-release.apk
+          path: ${{ runner.temp }}/Terraflat-release.apk
           if-no-files-found: error
           retention-days: 30
