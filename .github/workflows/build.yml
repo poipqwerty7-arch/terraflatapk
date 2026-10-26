@@ -1,37 +1,132 @@
-name: Create New Terraflat Signing Key
+name: Build Terraflat Release APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  create-key:
+  build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Generate new signing key
+      - name: Download project
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip build-essential \
+            autoconf automake libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev \
+            cmake libffi-dev libssl-dev
+
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "buildozer==1.5.0" "cython==0.29.36"
+
+      - name: Check project files
+        run: |
+          set -e
+          test -f buildozer.spec
+          test -f main.py
+          test -f icon.png
+          test -d Textures
+          test -d Music
+
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           set -euo pipefail
+
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+
           mkdir -p "$RUNNER_TEMP/signing"
 
-          keytool -genkeypair -v \
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode \
+            > "$RUNNER_TEMP/signing/release.keystore"
+
+          keytool -list \
             -keystore "$RUNNER_TEMP/signing/release.keystore" \
-            -storetype PKCS12 \
-            -storepass "TerraflatNewKey2026!" \
-            -keypass "TerraflatNewKey2026!" \
-            -alias terraflat \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Terraflat, O=Terraflat, C=RU"
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS"
 
-          echo "New signing key created."
+      - name: Accept Android licenses and build APK
+        run: |
+          set -euo pipefail
 
-      - name: Upload new signing key
+          mkdir -p "$HOME/.android"
+          touch "$HOME/.android/repositories.cfg"
+
+          yes | buildozer android-licenses || true
+          buildozer -v android release
+
+      - name: Sign and verify APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          SDK="$HOME/.buildozer/android/platform/android-sdk"
+          KEYSTORE="$RUNNER_TEMP/signing/release.keystore"
+
+          APK="$(find bin -maxdepth 1 -type f -name '*.apk' \
+            -printf '%T@ %p\n' | sort -nr | head -n 1 \
+            | cut -d' ' -f2-)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not found in the bin directory."
+            exit 1
+          fi
+
+          TOOLS="$(find "$SDK/build-tools" \
+            -mindepth 1 -maxdepth 1 -type d \
+            | sort -V | tail -n 1)"
+
+          test -x "$TOOLS/zipalign"
+          test -x "$TOOLS/apksigner"
+
+          "$TOOLS/zipalign" -f -p 4 \
+            "$APK" "$RUNNER_TEMP/aligned.apk"
+
+          "$TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out "$RUNNER_TEMP/Terraflat-release.apk" \
+            "$RUNNER_TEMP/aligned.apk"
+
+          "$TOOLS/apksigner" verify --verbose \
+            "$RUNNER_TEMP/Terraflat-release.apk"
+
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Terraflat-NEW-SIGNING-KEY
-          path: ${{ runner.temp }}/signing/release.keystore
-          retention-days: 1
+          name: Terraflat-Release-APK
+          path: ${{ runner.temp }}/Terraflat-release.apk
+          if-no-files-found: error
+          retention-days: 30
