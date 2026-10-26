@@ -1,56 +1,122 @@
-name: Build APK
+
+name: Build Terraflat Release APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Скачать исходный код
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Установить Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
-      - name: Системные зависимости
+      - name: Установить Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Установить системные зависимости
         run: |
           sudo apt-get update
-          sudo apt-get install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config \
-            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+          sudo apt-get install -y \
+            git zip unzip \
+            autoconf automake libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev \
+            cmake libffi-dev libssl-dev \
+            build-essential ccache
 
-      - name: Генерация ключа подписи (для RuStore)
+      - name: Установить Buildozer
         run: |
-          keytool -genkey -v -keystore mygame.keystore -alias mygame_alias \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass "SuperSecretPass123" -keypass "SuperSecretPass123" \
-            -dname "CN=Terraflat, O=Developer, C=RU"
+          python -m pip install --upgrade pip
+          python -m pip install "buildozer==1.5.0" "cython==0.29.36"
 
-      - name: Установка зависимостей Python и принятие лицензий Android
+      - name: Проверить обязательные файлы
         run: |
-          pip install --upgrade pip
-          pip install buildozer cython==0.29.36
-          
-          # Настраиваем окружение Android
-          mkdir -p ~/.android
-          touch ~/.android/repositories.cfg
-          
-          # Исправлено: используем правильный синтаксис команды android-licenses через дефис
-          yes | buildozer android-licenses
+          test -f buildozer.spec
+          test -f main.py
+          test -f icon.png
+          test -d Textures
+          test -d Music
 
-      - name: Buildozer Сборка
+      - name: Подготовить ключ подписи
         env:
-          BUILDOZER_SECRET_KEYSTORE: mygame.keystore
-          BUILDOZER_SECRET_KEYSTORE_PASSWORD: SuperSecretPass123
-          BUILDOZER_SECRET_KEY_ALIAS: mygame_alias
-          BUILDOZER_SECRET_KEY_PASSWORD: SuperSecretPass123
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          # Собираем РЕЛИЗНУЮ версию
+          test -n "$KEYSTORE_BASE64"
+          mkdir -p "$RUNNER_TEMP/terraflat-signing"
+          echo "$KEYSTORE_BASE64" | base64 --decode \
+            > "$RUNNER_TEMP/terraflat-signing/release.keystore"
+          test -s "$RUNNER_TEMP/terraflat-signing/release.keystore"
+
+      - name: Принять лицензии Android
+        run: |
+          mkdir -p "$HOME/.android"
+          touch "$HOME/.android/repositories.cfg"
+          yes | buildozer android-licenses || true
+
+      - name: Собрать Release APK
+        env:
+          BUILDOZER_WARN_ON_ROOT: "0"
+        run: |
           buildozer -v android release
 
-      - uses: actions/upload-artifact@v4
+      - name: Подписать APK для RuStore
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK="$HOME/.buildozer/android/platform/android-sdk"
+          APK="$(find bin -maxdepth 1 -type f -name '*.apk' \
+            ! -name 'Terraflat-release.apk' | head -n 1)"
+
+          test -n "$APK"
+          test -f "$APK"
+
+          APKSIGNER="$(find "$SDK/build-tools" -type f \
+            -name apksigner | sort -V | tail -n 1)"
+          ZIPALIGN="$(find "$SDK/build-tools" -type f \
+            -name zipalign | sort -V | tail -n 1)"
+
+          test -n "$APKSIGNER"
+          test -n "$ZIPALIGN"
+
+          KEYSTORE="$RUNNER_TEMP/terraflat-signing/release.keystore"
+          zipalign -f -p 4 "$APK" bin/Terraflat-aligned.apk
+
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out bin/Terraflat-release.apk \
+            bin/Terraflat-aligned.apk
+
+          "$APKSIGNER" verify --verbose --print-certs \
+            bin/Terraflat-release.apk
+
+          rm -f bin/Terraflat-aligned.apk
+
+      - name: Загрузить готовый APK
+        uses: actions/upload-artifact@v4
         with:
-          name: terraflat-release-apk
-          path: bin/*.apk
+          name: Terraflat-Release-APK
+          path: bin/Terraflat-release.apk
+          if-no-files-found: error
+          retention-days: 30
