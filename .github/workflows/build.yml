@@ -1,131 +1,37 @@
-
-name: Build Terraflat Release APK
+name: Create New Terraflat Signing Key
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  create-key:
     runs-on: ubuntu-22.04
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git zip unzip build-essential \
-            autoconf automake libtool pkg-config \
-            zlib1g-dev libncurses5-dev libncursesw5-dev \
-            cmake libffi-dev libssl-dev
-
-          python -m pip install --upgrade pip
-          python -m pip install \
-            "buildozer==1.5.0" "cython==0.29.36"
-
-      - name: Check project files
-        run: |
-          test -f buildozer.spec
-          test -f main.py
-          test -f icon.png
-          test -d Textures
-          test -d Music
-
-      - name: Prepare signing key
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/signing"
-
-          if [ -n "$KEYSTORE_BASE64" ] &&
-             [ -n "$KEYSTORE_PASSWORD" ]; then
-            echo "$KEYSTORE_BASE64" | base64 --decode \
-              > "$RUNNER_TEMP/signing/release.keystore"
-            echo "FIRST_SETUP=false" >> "$GITHUB_ENV"
-          else
-            keytool -genkeypair \
-              -keystore "$RUNNER_TEMP/signing/release.keystore" \
-              -storepass "TemporarySetupOnly123!" \
-              -keypass "TemporarySetupOnly123!" \
-              -alias terraflat \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Terraflat, O=Terraflat, C=RU"
-
-            echo "FIRST_SETUP=true" >> "$GITHUB_ENV"
-          fi
-
-      - name: Build Android package
-        run: |
-          mkdir -p "$HOME/.android"
-          touch "$HOME/.android/repositories.cfg"
-          yes | buildozer android-licenses || true
-          buildozer -v android release
-
-      - name: Export first setup key
-        if: env.FIRST_SETUP == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Terraflat-FIRST-SETUP-KEY
-          path: ${{ runner.temp }}/signing/release.keystore
-          retention-days: 1
-
-      - name: Stop before publishing unsigned-key build
-        if: env.FIRST_SETUP == 'true'
-        run: |
-          echo "Download the key artifact and configure GitHub Secrets."
-          echo "Run the workflow again after setup."
-          exit 1
-
-      - name: Sign release APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      - name: Generate new signing key
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/signing"
 
-          SDK="$HOME/.buildozer/android/platform/android-sdk"
-          APK="$(find bin -maxdepth 1 -name '*.apk' | head -n 1)"
-          test -n "$APK"
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/signing/release.keystore" \
+            -storetype PKCS12 \
+            -storepass "TerraflatNewKey2026!" \
+            -keypass "TerraflatNewKey2026!" \
+            -alias terraflat \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Terraflat, O=Terraflat, C=RU"
 
-          TOOLS="$(find "$SDK/build-tools" -mindepth 1 \
-            -maxdepth 1 -type d | sort -V | tail -n 1)"
+          echo "New signing key created."
 
-          "$TOOLS/zipalign" -f -p 4 \
-            "$APK" "$RUNNER_TEMP/aligned.apk"
-
-          "$TOOLS/apksigner" sign \
-            --ks "$RUNNER_TEMP/signing/release.keystore" \
-            --ks-key-alias "$KEY_ALIAS" \
-            --ks-pass env:KEYSTORE_PASSWORD \
-            --key-pass env:KEY_PASSWORD \
-            --out "$RUNNER_TEMP/Terraflat-release.apk" \
-            "$RUNNER_TEMP/aligned.apk"
-
-          "$TOOLS/apksigner" verify --verbose \
-            "$RUNNER_TEMP/Terraflat-release.apk"
-
-      - name: Upload signed APK
-        if: success() && env.FIRST_SETUP == 'false'
+      - name: Upload new signing key
         uses: actions/upload-artifact@v4
         with:
-          name: Terraflat-Release-APK
-          path: ${{ runner.temp }}/Terraflat-release.apk
-          if-no-files-found: error
-          retention-days: 30
+          name: Terraflat-NEW-SIGNING-KEY
+          path: ${{ runner.temp }}/signing/release.keystore
+          retention-days: 1
